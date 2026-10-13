@@ -1,6 +1,0 @@
-# dsh-radar-config bundle patch: 把宿主半插进 profile 的层栈
-- insert:
-    - id: radar-config
-      name: 'dsh-radar-config'
-      config:
-        configPath: '/sdcard/Download/DSH工作区/radar/config.yaml'
