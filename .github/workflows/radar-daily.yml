@@ -48,6 +48,7 @@ on:
 
 permissions:
   contents: write               # 仅为「保持活跃」写一行日期，防止长期无活动被停 schedule
+  actions: write                # 仅为轮末接力派发下一轮
 
 env:
   TZ: Asia/Shanghai
@@ -133,6 +134,21 @@ jobs:
           # 「几点做什么」不在这里 —— 看 radar/config.yaml → schedule，
           # 由 radar/scheduler.py 执行。
         run: bash radar/daemon.sh
+
+      - name: 接力下一轮（不把命押在上游 cron 是否准时发令）
+        # 上游 cron 实测可能延迟数小时、甚至整拍不发令；所以轮末主动派发下一轮，
+        # 由 concurrency 排队衔接。cron 只当发令枪备胎。
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.once != '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          printf '%s' "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"minutes\":\"290\",\"once\":\"0\",\"force\":\"0\"}}" \
+            | gh api --method POST \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/radar-daily.yml/dispatches" \
+                --input - \
+            && echo "[chain] 已派出下一轮，本轮结束时它会立刻接上" \
+            || echo "[chain] 派发失败（不致命）—— 仍由上游 cron 与排队兜底"
 
       - name: 保存状态
         if: always()
