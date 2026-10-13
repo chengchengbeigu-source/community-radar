@@ -32,9 +32,16 @@ import time
 from radar.discourse import _base, _j, _req, csrf, load_state, save_state
 
 DEFAULT_QUIET = [2, 7]              # 夜里 2:00-7:00 不活动（风控友好，可关）
-FLUSH_LO, FLUSH_HI = 55.0, 75.0     # 上报间隔，必须 < 100s，否则服务端不计
-TOPIC_DWELL = (4 * 60, 11 * 60)     # 4~11 分钟换一帖
+FLUSH_LO, FLUSH_HI = 58.0, 92.0     # 上报间隔：必须 < 100s（否则服务端不计），但上下浮动大一些
+TOPIC_DWELL = (2 * 60, 18 * 60)     # 2~18 分钟换一帖：有时扫两眼就走，有时一帖看很久
 PAGE_CHOICES = (0, 1, 2, 3)
+# 像人一样中途离开：连续活动这么久之后，随机歇一会儿（这段时间不产生任何请求）
+BREAK_EVERY = (35 * 60, 70 * 60)
+BREAK_LEN = (3 * 60, 12 * 60)
+
+
+class AuthExpired(Exception):
+    """登录态失效（cookie 过期 / 被踢下线）—— 需要人重新登录换 cookie，机器修不了。"""
 
 
 def _in_window(hour, w):
@@ -97,11 +104,28 @@ def progress(e, proxy=None):
     return None
 
 
+def auth_ok(e, proxy=None):
+    """探测登录态。返回已登录的用户名；未登录（cookie 过期/被踢）返回 None。
+
+    走 /session/current.json —— 未登录时它回 404 且响应头带 discourse-logged-out: 1，
+    而 /session/csrf 匿名也会给 token，是假活，不能拿来判断。"""
+    proxy = proxy or (e.get("proxy") or "direct")
+    try:
+        st, b = _req(e, "/session/current.json", proxy=proxy)
+    except Exception:
+        return None
+    if st != 200:
+        return None
+    return ((_j(b).get("current_user") or {}).get("username")) or None
+
+
 def run(e, cfg, seconds, log=print):
     """连续发 timings 最多 seconds 秒，返回本次实际计入的秒数。
 
     - 遵守 daily.active_hours（活跃时段外不启动，和 run_daily 的风控一致）
     - 遵守 daily.quiet_hours（默认 2:00-7:00，期间只睡不发）
+    - 像人一样：每隔 35~70 分钟随机离开 3~12 分钟；每帖停留 2~18 分钟随机
+    - 登录态失效会抛 AuthExpired（不在这里自作主张，交给调度器推 QQ）
     - 累加写回 missions.json 的 read:<日期>，run_daily 的当日预算据此跳过重复阅读
     """
     name = e.get("name") or _base(e)
@@ -117,6 +141,12 @@ def run(e, cfg, seconds, log=print):
     if not _in_window(time.localtime().tm_hour, hrs):
         log("  [%s] 不在活跃时段 %d:00-%d:00，心跳不启动" % (name, hrs[0], hrs[1]))
         return 0.0
+
+    # 登录态体检：这是整套系统唯一必须人来修的点，所以每一片都先探一下，
+    # 死了就抛 AuthExpired 让调度器推 QQ 告警（而不是闷头刷 403 刷一整晚）。
+    who = auth_ok(e, proxy)
+    if not who:
+        raise AuthExpired(name)
 
     budget = float(d.get("read_minutes") or 120) * 60
     done = float(mine.get(read_key) or 0)
@@ -134,11 +164,12 @@ def run(e, cfg, seconds, log=print):
     log("  [%s] 心跳启动：本次最多 %.1f 分钟（今日 %.1f/%.0f 分钟）"
         % (name, seconds / 60.0, done / 60.0, budget / 60.0))
     start = last_flush = time.time()
+    next_break = start + random.uniform(*BREAK_EVERY)
     topic = None
     topic_started = topic_dwell = 0.0
     cursor, recent = 1, []
     got = 0.0
-    n_ok = n_bad = 0
+    n_ok = n_bad = n_auth = 0
     last_log = 0.0
 
     while True:
@@ -152,6 +183,15 @@ def run(e, cfg, seconds, log=print):
             log("  [%s] 夜间安静时段 %d:00-%d:00，暂停 %.0f 分钟"
                 % (name, quiet[0], quiet[1], nap / 60.0))
             time.sleep(nap)
+            continue
+
+        # 像人一样中途离开：活动一段之后随机歇几分钟，期间一个请求都不发
+        if now >= next_break:
+            nap = max(1.0, min(random.uniform(*BREAK_LEN), seconds - ran))
+            log("  [%s] 歇一会儿（%.1f 分钟），先离开一下" % (name, nap / 60.0))
+            time.sleep(nap)
+            next_break = time.time() + random.uniform(*BREAK_EVERY)
+            last_flush = time.time()     # 离开期间的空档本来就不该记进在线时长
             continue
 
         if topic is None or now - topic_started > topic_dwell:
@@ -177,7 +217,7 @@ def run(e, cfg, seconds, log=print):
 
         ms = int(min(elapsed, 60.0) * 1000)
         posts, cur = [], cursor
-        for _ in range(random.choice([1, 1, 1, 2, 2, 3])):
+        for _ in range(random.choice([1, 1, 2, 2, 2, 3, 4])):
             cur = min(cur, topic["posts"])
             posts.append(cur)
             if random.random() < 0.7:
@@ -193,6 +233,7 @@ def run(e, cfg, seconds, log=print):
 
         if st == 200:
             n_ok += 1
+            n_auth = 0
             got += elapsed
             mine[read_key] = round(done + got, 1)
             save_state(st_all)
@@ -201,6 +242,15 @@ def run(e, cfg, seconds, log=print):
             log("  [%s] timings HTTP %s，退避 30s" % (name, st))
             if st in (0, 403, 429):
                 time.sleep(30)
+            # 401/403 连着两次就往登录态上查一下 —— 是 cookie 过期了就立刻上报，
+            # 别在这里闷头重试（机器修不了，只有人能重新登录）。
+            if st in (401, 403):
+                n_auth += 1
+                if n_auth >= 2 and not auth_ok(e, proxy):
+                    log("  [%s] 登录态已失效（连续 %d 次 HTTP %s 且 /session/current.json 无用户）"
+                        % (name, n_auth, st))
+                    save_state(st_all)
+                    raise AuthExpired(name)
 
         if now - last_log > 600:
             last_log = now

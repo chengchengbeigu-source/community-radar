@@ -79,9 +79,13 @@ def do_checkin(cfg, log=print, force=False, no_sleep=True, only=None):
 
 
 def do_progress(cfg, log=print, push_it=True):
-    """取站内实时阅读进度（upgrade-progress.json，不是有缓存的 summary.json）并推送通知。"""
-    from radar.heartbeat import progress
+    """取站内实时阅读进度（upgrade-progress.json，不是有缓存的 summary.json）并推送通知。
+
+    取不到时顺手查一下登录态：失效就按「唯一需要人修的点」推 QQ 告警。
+    """
+    from radar.heartbeat import auth_ok, progress
     out = {}
+    dead = []
     for e in cfg.get("checkins") or []:
         if not e.get("enabled", True):
             continue
@@ -92,12 +96,47 @@ def do_progress(cfg, log=print, push_it=True):
             pg = progress(e)
         except Exception as ex:
             pg = "取不到（%s）" % type(ex).__name__
+        if not pg:
+            try:
+                if not auth_ok(e):
+                    pg = "登录态失效，需要重新登录换 cookie"
+                    dead.append(name)
+            except Exception:
+                pass
         out[name] = pg or "取不到"
         log("  [%s] 站内实时：%s" % (name, out[name]))
     if push_it and out:
-        body = "；".join("%s %s" % (k, v) for k, v in out.items())
-        collect.push(cfg, "在线进度 " + today_str(), body, log=log)
+        # 失效的站点不塞进这条例行进度里 —— 它另外会有一条明确的告警，别重复轰炸
+        alive = {k: v for k, v in out.items() if k not in dead}
+        if alive:
+            body = "；".join("%s %s" % (k, v) for k, v in alive.items())
+            collect.push(cfg, "在线进度 " + today_str(), body, log=log)
+    if push_it and dead:
+        st = _state_load()
+        for nm in dead:
+            _alert_auth_dead(cfg, nm, st, log=log)
     return out
+
+
+def _alert_auth_dead(cfg, name, st, log=print):
+    """登录态失效告警 —— 这是整套系统里唯一必须人来修的点，务必推到 QQ。
+
+    6 小时内只提醒一次，免得每片心跳都轰炸你。
+    """
+    now = time.time()
+    last = float(st.get("auth_alert_ts") or 0)
+    if now - last < 6 * 3600:
+        log("[sched] 登录态失效（%s），%.1f 小时前提醒过，暂不重复推"
+            % (name, (now - last) / 3600.0))
+        return False
+    txt = ("%s 的登录态已失效：签到与在线时长保活都已停摆。\n"
+           "这是整套系统唯一需要你动手的地方 —— 重新登录后把新的 cookie 换掉。\n"
+           "发现时间：%s" % (name, datetime.datetime.now().strftime("%F %T")))
+    collect.push(cfg, "⚠️ 登录态失效 " + today_str(), txt, log=log)
+    st["auth_alert_ts"] = now
+    st["auth_dead_name"] = name
+    _state_save(st)
+    return True
 
 
 def do_digest(cfg, log=print, day=None):
@@ -225,6 +264,7 @@ def run(cfg, minutes, log=print):
     next_collect = start                      # 起来的头一件事就是采一轮
     next_prog = start + 5 * 60                # 5 分钟后先报一次阅读进度，让你知道活着
     next_reload = start + every_reload
+    auth_dead_until = 0.0                     # 登录态失效后的静默期（到点再探一次）
 
     log("[sched] 常驻开始：%.0f 分钟｜采集 %g 分钟一轮｜进度 %g 分钟一轮｜"
         "例行任务 %d 点｜日报 %d 点｜心跳切片 %.0fs｜配置热重载 %g 分钟"
@@ -293,9 +333,20 @@ def run(cfg, minutes, log=print):
         slice_s = min(hb_slice, left - 30)
         if slice_s < 30:
             break
+
+        # 登录态已失效：别再刷心跳（刷也是 401/403），静默 30 分钟后重探一次
+        if auth_dead_until > time.time():
+            nap = min(300.0, max(5.0, auth_dead_until - time.time()))
+            time.sleep(min(nap, max(5.0, deadline - time.time())))
+            continue
+
         t0 = time.time()
-        _heartbeat_slice(cfg, slice_s, log)
+        hb = _heartbeat_slice(cfg, slice_s, log)
         spent = time.time() - t0
+        if isinstance(hb, tuple) and len(hb) == 2 and hb[0] == "auth":
+            _alert_auth_dead(cfg, hb[1], st, log)
+            auth_dead_until = time.time() + 1800
+            continue
         if spent < 5:
             # 心跳一步没走（比如落在 quiet_hours / active_hours 外），别空转烧 CPU
             log("[sched] 心跳未推进（可能在静默时段），歇 120s")
@@ -306,7 +357,11 @@ def run(cfg, minutes, log=print):
 
 
 def _heartbeat_slice(cfg, seconds, log):
-    """对每个 discourse 类例行同步项跑一段心跳。"""
+    """对每个 discourse 类例行同步项跑一段心跳。
+
+    登录态失效时返回 ("auth", 站点名)，交给主循环去推 QQ 告警。
+    """
+    from radar.heartbeat import AuthExpired
     from radar.heartbeat import run as hbrun
     n = 0
     for e in cfg.get("checkins") or []:
@@ -317,6 +372,8 @@ def _heartbeat_slice(cfg, seconds, log):
         try:
             hbrun(e, cfg, seconds, log=log)
             n += 1
+        except AuthExpired:
+            return ("auth", e.get("name"))
         except Exception as ex:
             log("[sched] 心跳异常（%s）：%s: %s" % (e.get("name"), type(ex).__name__, ex))
     if not n:

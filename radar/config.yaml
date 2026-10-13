@@ -246,7 +246,10 @@ checkins:
     # 例行同步 + 登录态体检，避免 run_daily 每轮再重复上报一次 dwell。
     read: false
     read_mode: api
-    read_minutes: 600
+    # 每日上限 240 分钟（4 小时）—— 一个真人再勤也就这样了。不要急着凑够 600 分钟：
+    # 上限压低 + 心跳里随机离开（35~70 分钟活动后歇 3~12 分钟）+ 夜间 23→8 点完全不活动，
+    # 宁可多花两天，也不要因为节奏太规整被当成机器。
+    read_minutes: 240
     topics_per_run: 80
     dwell_s:
     - 45
