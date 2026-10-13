@@ -40,7 +40,6 @@ community-radar/
 │   ├── store.py               SQLite 存储
 │   ├── github_secrets.py      从 Secrets 注入运行时配置
 │   └── requirements.txt
-├── dsh-plugin/radar-config/   配置面板插件源码
 └── .github/workflows/         云端任务定义
 ```
 
@@ -96,8 +95,8 @@ concurrency.cancel-in-progress: false
 `radar/config.yaml` 里对应字段一律留空字符串，运行时由 `radar/github_secrets.py`
 从环境变量注入，**注入结果不会写回仓库**（workflow 只上传 artifact）。
 
-配置面板插件往仓库写入时还会过一道 `config_io.py` 的 `sanitize`：
-`access_token` / `user_id` / `username` / `cookie` / `password` 这类字段一律清空。
+写入侧还有一道 `sanitize`：`access_token` / `user_id` / `username` / `cookie` / `password`
+这类字段一律清空，只有非敏感的调度与关键词配置会被写进仓库。
 
 ## 状态接续
 
