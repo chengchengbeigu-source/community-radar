@@ -1,0 +1,19 @@
+# ── 密钥与本地临时文件：永远不进仓库 ──
+secrets/
+proxy.txt
+data/
+outbox/
+config.yaml.bak
+*.log
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ── 编辑器 / 系统 ──
+.vscode/
+.idea/
+.DS_Store

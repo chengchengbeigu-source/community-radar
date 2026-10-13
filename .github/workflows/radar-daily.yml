@@ -1,0 +1,149 @@
+name: scheduled-sync
+
+# ═══════════════════════════════════════════════════════════════
+#  scheduled-sync —— 常驻式定时同步任务
+#
+#  ── 为什么能长时间连续运行 ──
+#  公开仓库的 Actions 分钟数不计费，适合长时间占用 runner。
+#  cron 每 4 小时起一轮，单轮常驻 290 分钟（< 单 job 上限 6 小时）。
+#  290 > 4 小时 ⇒ 下一轮触发时上一轮仍在运行，被 concurrency 排进队列
+#  （cancel-in-progress: false，不互相踩）；上一轮一结束，排队的下一轮立刻接上。
+#
+#  ── 凭据 ──
+#  全部来自仓库 Secrets，本仓库任何文件都不含凭据。
+#  运行前由 radar/github_secrets.py 注入 config.yaml，注入结果不写回仓库。
+#
+#  ── 通知通道 ──
+#  云端 runner 够不到本机的回环地址，因此通知走公网 API。
+#  实现见 radar/util.py 的 qq_send()；未配置时依次退回本机通知栏 / 备用通道。
+#
+#  ── 时区 ──
+#  TZ=Asia/Shanghai：任务表用 time.localtime() 判时段，runner 默认 UTC。
+#
+#  ── 状态 ──
+#  radar/data 走 actions/cache 在轮次之间接续：当天记录、累计进度、已入库条目。
+# ═══════════════════════════════════════════════════════════════
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"        # 每 4 小时起一轮；单轮 290 分钟 → 靠排队续上
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "本轮常驻多少分钟（默认 290）"
+        default: "290"
+        required: false
+      once:
+        description: "只跑一轮就退出（1=试跑）"
+        default: "0"
+        required: false
+      force:
+        description: "忽略时段限制（1=强制）"
+        default: "0"
+        required: false
+      read_minutes:
+        description: "临时覆盖本次保活上限（分钟，留空=用 config.yaml）"
+        default: ""
+        required: false
+
+permissions:
+  contents: write               # 仅为「保持活跃」写一行日期，防止长期无活动被停 schedule
+
+env:
+  TZ: Asia/Shanghai
+
+concurrency:
+  group: sync-24x7             # 同一时间只跑一个，多的排队（不取消）
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360        # 必须 > 常驻分钟数，否则跑到一半被回收
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 恢复上次状态（当天记录 + 累计进度 + 已入库条目）
+        uses: actions/cache/restore@v4
+        with:
+          path: radar/data
+          key: radar-data-${{ github.run_id }}
+          restore-keys: |
+            radar-data-
+
+      - name: 恢复浏览器缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('radar/requirements.txt') }}
+
+      - name: 装依赖
+        run: |
+          python -m pip install -q --upgrade pip
+          # pyyaml：配置与状态读写的全部依赖
+          # playwright：其中一个抓取源要过 JS 挑战；缺了它该源自动降级到 RSS
+          pip install -q pyyaml playwright
+          python -m playwright install --with-deps chromium
+        timeout-minutes: 10
+
+      - name: 注入运行时配置
+        env:
+          NODELOC_COOKIE: ${{ secrets.NODELOC_COOKIE }}
+          NODELOC_USER: ${{ secrets.NODELOC_USER }}
+          XSG_TOKEN: ${{ secrets.XSG_TOKEN }}
+          XSG_UID: ${{ secrets.XSG_UID }}
+          RADAR_READ_MINUTES: ${{ github.event.inputs.read_minutes }}
+        run: python3 radar/github_secrets.py
+
+      - name: 保持仓库活跃（定期，防 schedule 被自动停用）
+        run: |
+          set -uo pipefail
+          mkdir -p radar/data
+          NOW=$(date -u '+%F')
+          OLD=$(head -1 radar/data/.alive 2>/dev/null || echo "")
+          OLD_TS=$(date -u -d "$OLD" +%s 2>/dev/null || echo 0)
+          NOW_TS=$(date -u -d "$NOW" +%s)
+          AGE=$(( NOW_TS - OLD_TS ))
+          if [ "$AGE" -lt 2160000 ]; then
+            echo "[alive] 距上次提交 $(( AGE / 86400 )) 天（<25 天），跳过"
+          else
+            echo "$NOW" > radar/data/.alive
+            git config user.name  "sync-bot"
+            git config user.email "sync-bot@users.noreply.github.com"
+            git add -f radar/data/.alive
+            git commit -m "chore(alive): $NOW" || true
+            git pull --rebase --autostash origin main >/dev/null 2>&1 || true
+            git push origin HEAD:main || echo "[alive] 推送失败（不致命，继续跑）"
+          fi
+
+      - name: 常驻轮次（抓取 / 通知 / 例行任务 / 每日汇报 / 保活）
+        env:
+          RADAR_QQ_APPID: ${{ secrets.RADAR_QQ_APPID }}
+          RADAR_QQ_SECRET: ${{ secrets.RADAR_QQ_SECRET }}
+          RADAR_QQ_OPENID: ${{ secrets.RADAR_QQ_OPENID }}
+          RADAR_TG_BOT: ${{ secrets.RADAR_TG_BOT }}
+          RADAR_TG_CHAT: ${{ secrets.RADAR_TG_CHAT }}
+          RADAR_MINUTES: ${{ github.event.inputs.minutes || '290' }}
+          RADAR_ONCE: ${{ github.event.inputs.once || '0' }}
+          RADAR_FORCE: ${{ github.event.inputs.force || '0' }}
+          # 「几点做什么」不在这里 —— 看 radar/config.yaml → schedule，
+          # 由 radar/scheduler.py 执行。
+        run: bash radar/daemon.sh
+
+      - name: 保存状态
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: radar/data
+          key: radar-data-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: radar-outbox
+          path: radar/outbox/
+          if-no-files-found: ignore

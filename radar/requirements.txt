@@ -1,0 +1,10 @@
+pyyaml>=6.0
+
+# playwright 是 nodeseek 采集器的命脉，不是可选项：
+#   radar/sources/nodeseek.py 的 _browser_items() 用它起 chromium 过 Cloudflare 挑战，
+#   拿不到列表页时才退 RSS（rss_fallback），而 RSS 只有最近几页、量少一大截。
+#   实测带 chromium：nodeseek 抓到 613 条；没有 playwright 且没有 try/except 时直接 0 条。
+#
+# 注意：在线时长那条线（radar/heartbeat.py，read_mode: "api"）是纯 HTTP，不需要浏览器。
+# 装 playwright 只为了「采集」，装完约 1 分钟 + ~300MB 磁盘，相对 290 分钟的单轮常驻可忽略。
+playwright>=1.40
