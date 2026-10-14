@@ -114,6 +114,29 @@ def _prog_note(e, name, pg, st_all, today):
     return ("（" + "，".join(bits) + "）") if bits else ""
 
 
+def notify_unlocked(name, cfg, body, ach, lv=None, log=print):
+    """推一条「已解锁 🎉」，同一个 (站名, 标记) 只推一次。
+
+    标记 ach 形如 "L1"（站内等级到了）或 "T600"（阅读进度到了）。记账落在
+    scheduler.json 的 congrats:<站名>:<标记>，跨轮次 / 跨进程都不会重复轰炸 ——
+    radar/heartbeat.py::_reached_and_notify 也调这里，两边共用同一个键，
+    谁先发现谁推，收件人只会看到一条。
+    """
+    st_c = _state_load()
+    key = "congrats:%s:%s" % (name, ach)
+    if st_c.get(key):
+        return False
+    lvl_name = ("白银会员（TL1）" if lv == 1 else ("TL%s" % lv)) if lv is not None else ""
+    txt = ("%s 的目标已经达成 🎉\n%s\n%s"
+           "在线时长保活已按 stop_at 停机，不会再空转白耗。"
+           % (name, body, ("当前等级：" + lvl_name + "\n") if lvl_name else ""))
+    collect.push(cfg, "🎉 %s 已解锁" % name, txt, log=log)
+    st_c[key] = int(time.time())
+    _state_save(st_c)
+    log("[sched] 已推「%s 已解锁」祝贺（%s）" % (name, ach))
+    return True
+
+
 def do_progress(cfg, log=print, push_it=True):
     """取站内实时阅读进度（upgrade-progress.json，不是有缓存的 summary.json）并推送通知。
 
@@ -174,20 +197,10 @@ def do_progress(cfg, log=print, push_it=True):
     except Exception:
         pass
     if push_it and met:
-        # 「已解锁」只推一次，靠 scheduler.json 记账（跨轮次也不会重复轰炸）
-        st_c = _state_load()
+        # 「已解锁」只推一次 —— 抽成 notify_unlocked 是因为心跳那边也要用
+        # （达标那一刻就地推，不用等这里一小时一次轮询），两边必须共用去重键。
         for nm, body, ach, lv in met:
-            key = "congrats:%s:%s" % (nm, ach)
-            if st_c.get(key):
-                continue
-            lvl_name = ("白银会员（TL1）" if lv == 1 else ("TL%s" % lv)) if lv is not None else ""
-            txt = ("%s 的目标已经达成 🎉\n%s\n%s"
-                   "在线时长保活已按 stop_at 停机，不会再空转白耗。"
-                   % (nm, body, ("当前等级：" + lvl_name + "\n") if lvl_name else ""))
-            collect.push(cfg, "🎉 %s 已解锁" % nm, txt, log=log)
-            st_c[key] = int(time.time())
-            _state_save(st_c)
-            log("[sched] 已推「%s 已解锁」祝贺（%s）" % (nm, ach))
+            notify_unlocked(nm, cfg, body, ach, lv, log=log)
     if push_it and out:
         # 失效的站点不塞进这条例行进度里 —— 它另外会有一条明确的告警，别重复轰炸
         alive = {k: v for k, v in out.items() if k not in dead}

@@ -26,6 +26,7 @@ UserStat#update_time_read! 里，由 User#update_last_seen! 触发：
   python3 -m radar heartbeat --seconds 60 --status   # 只看进度，不发心跳
 """
 import json
+import os
 import random
 import re
 import time
@@ -46,7 +47,9 @@ class AuthExpired(Exception):
 
 
 def _in_window(hour, w):
-    """w = [a, b] 左闭右开；a == b 视为全天。"""
+    """w = [a, b] 左闭右开；a == b 视为全天；空/None 视为「不限时段」。"""
+    if not w:
+        return True
     a, b = int(w[0]), int(w[1])
     if a == b:
         return True
@@ -164,11 +167,37 @@ def progress_level(e, proxy=None):
     return (lv, d)
 
 
+def _reached_and_notify(e, cfg, pg, log=print):
+    """站内进度已到目标（pv >= pt）就推 🎉 并返回 True，让调用方停机。
+
+    为什么要在心跳里就地做：调度器的进度轮询是 progress_minutes（默认 60）分钟一次，
+    刚好卡在 60 分钟，达标那一刻最多还要空转一小时才被发现。这里就地判定、就地停。
+    去重键与 scheduler.do_progress 完全一致（scheduler.json 的 congrats:<站名>:<标记>），
+    所以两边谁先发现谁推，只会有一条 📨。
+    """
+    try:
+        pv, pt = parse_progress(pg)
+    except Exception:
+        return False
+    if pv is None or pt is None or pt <= 0 or pv < pt:
+        return False
+    name = e.get("name") or "?"
+    try:
+        from radar.scheduler import notify_unlocked
+        notify_unlocked(name, cfg, pg, "T%d" % int(pt), log=log)
+    except Exception as ex:
+        log("  [%s] 达标通知推送失败（不致命，调度器的进度轮询还会再试）：%s: %s"
+            % (name, type(ex).__name__, ex))
+    log("  [%s] 站内进度已到 %.0f/%.0f —— 达标停机，不再发 timings" % (name, pv, pt))
+    return True
+
+
 def run(e, cfg, seconds, log=print):
     """连续发 timings 最多 seconds 秒，返回本次实际计入的秒数。
 
     - 遵守 daily.active_hours（活跃时段外不启动，和 run_daily 的风控一致）
-    - 遵守 daily.quiet_hours（默认 2:00-7:00，期间只睡不发）
+    - 遵守 daily.quiet_hours（默认 2:00-7:00，期间只睡不发；写成 [] 表示不静默）
+    - daily._force / 环境变量 RADAR_FORCE=1：**忽略上面两条时段限制**，立刻开始保活
     - 像人一样：每隔 35~70 分钟随机离开 3~12 分钟；每帖停留 2~18 分钟随机
     - 登录态失效会抛 AuthExpired（不在这里自作主张，交给调度器推 QQ）
     - 累加写回 missions.json 的 read:<日期>，run_daily 的当日预算据此跳过重复阅读
@@ -176,16 +205,31 @@ def run(e, cfg, seconds, log=print):
     name = e.get("name") or _base(e)
     d = e.get("daily") or {}
     proxy = e.get("proxy") or "direct"
-    quiet = d.get("quiet_hours") or DEFAULT_QUIET
+    # 取值必须区分「没配」和「配成空」：[] 是假值，写成 `or DEFAULT_QUIET` 会把
+    # 「关掉夜间静默」这个意图悄悄换回默认的 2:00-7:00，于是永远关不掉。
+    quiet = d.get("quiet_hours")
+    if quiet is None:
+        quiet = DEFAULT_QUIET
+    # ── 强制模式（2026-10-15 修）──────────────────────────────────────────
+    # 病根：workflow 的 force=1 写着「忽略时段限制」，__main__.py 也确实把
+    # e["_force"] 打上了 —— 但**本文件从来没读过它**（全仓 grep `_force` 只有
+    # __main__.py:36 一处）。于是凌晨手动派发的 run 一律撞在 active_hours 上直接
+    # return 0，表现就是「点了强制运行，阅读时长一动不动」。
+    # 另外 e["_force"] 只在启动时打一次，而配置热重载会把整份 cfg 换掉
+    # （_reload_config → load_config），标记随之丢失；所以环境变量这条路也得认，
+    # daemon.sh 在整个 job 生命周期里都带着 RADAR_FORCE。
+    force = bool(e.get("_force")) or os.environ.get("RADAR_FORCE", "0") == "1"
     today = time.strftime("%Y-%m-%d")
     st_all = load_state()
     mine = st_all.setdefault(name, {})
     read_key = "read:%s" % today
 
     hrs = d.get("active_hours") or [8, 23]
-    if not _in_window(time.localtime().tm_hour, hrs):
+    if not force and not _in_window(time.localtime().tm_hour, hrs):
         log("  [%s] 不在活跃时段 %d:00-%d:00，心跳不启动" % (name, hrs[0], hrs[1]))
         return 0.0
+    if force:
+        log("  [%s] 强制模式：跳过活跃时段/夜间静默判定，立刻开始保活" % name)
 
     # 登录态体检：这是整套系统唯一必须人来修的点，所以每一片都先探一下，
     # 死了就抛 AuthExpired 让调度器推 QQ 告警（而不是闷头刷 403 刷一整晚）。
@@ -267,7 +311,7 @@ def run(e, cfg, seconds, log=print):
         if ran >= seconds:
             break
 
-        if _in_window(time.localtime().tm_hour, quiet):
+        if quiet and (not force) and _in_window(time.localtime().tm_hour, quiet):
             nap = max(1.0, min(600.0, seconds - ran))
             log("  [%s] 夜间安静时段 %d:00-%d:00，暂停 %.0f 分钟"
                 % (name, quiet[0], quiet[1], nap / 60.0))
@@ -347,8 +391,11 @@ def run(e, cfg, seconds, log=print):
             last_log = now
             pg = progress(e, proxy)
             log("  [%s] 已挂 %.1f 分钟｜上报 %d 次（失败 %d）｜记账 %.1f 分钟%s"
-                % (name, ran / 60.0, n_ok, n_bad, mine[read_key] / 60.0,
+                % (name, ran / 60.0, n_ok, n_bad, mine.get(read_key, 0) / 60.0,
                    ("｜站内实时：" + pg) if pg else ""))
+            # 站内已经刷满 → 就地停机 + 就地推 🎉（别再等调度器那一小时一次轮询）。
+            if _reached_and_notify(e, cfg, pg, log):
+                break
 
     save_state(st_all)
     log("  [%s] 心跳结束：本次 +%.1f 分钟，今日累计 %.1f 分钟"
