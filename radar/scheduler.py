@@ -120,11 +120,12 @@ def do_progress(cfg, log=print, push_it=True):
     取不到时顺手查一下登录态：失效就按「唯一需要人修的点」推 QQ 告警。
     """
     from radar.discourse import load_state, save_state
-    from radar.heartbeat import auth_ok, progress
+    from radar.heartbeat import auth_ok, parse_progress, progress, progress_level
     today = today_str()
     st_all = load_state()
     out = {}
     dead = []
+    met = []          # 本次观测到「已达标」的站点，循环后再统一推 🎉（避免在循环里发通知）
     for e in cfg.get("checkins") or []:
         if not e.get("enabled", True):
             continue
@@ -148,10 +149,45 @@ def do_progress(cfg, log=print, push_it=True):
             note = ""
         out[name] = (pg or "取不到") + note
         log("  [%s] 站内实时：%s" % (name, out[name]))
+
+        # 判定「本站目标已达成」：优先看等级（升级后再也读不到阅读时长条件了），
+        # 读不到等级才退回看 pv/pt。这样无论站点什么时候把条件挪走都能认出来。
+        _lv = _pv = _pt = None
+        try:
+            _lv = (progress_level(e) or (None,))[0]
+        except Exception:
+            _lv = None
+        try:
+            _pv, _pt = parse_progress(pg)
+        except Exception:
+            _pv, _pt = (None, None)
+        _stop_tl = (e.get("stop_at") or {}).get("trust_level")
+        _ach = None
+        if _lv is not None and _stop_tl is not None and float(_lv) >= float(_stop_tl):
+            _ach = "L%d" % int(float(_lv))
+        elif _pv is not None and _pt is not None and _pt > 0 and _pv >= _pt:
+            _ach = "T%d" % int(_pt)
+        if _ach:
+            met.append((name, out[name], _ach, _lv))
     try:
         save_state(st_all)
     except Exception:
         pass
+    if push_it and met:
+        # 「已解锁」只推一次，靠 scheduler.json 记账（跨轮次也不会重复轰炸）
+        st_c = _state_load()
+        for nm, body, ach, lv in met:
+            key = "congrats:%s:%s" % (nm, ach)
+            if st_c.get(key):
+                continue
+            lvl_name = ("白银会员（TL1）" if lv == 1 else ("TL%s" % lv)) if lv is not None else ""
+            txt = ("%s 的目标已经达成 🎉\n%s\n%s"
+                   "在线时长保活已按 stop_at 停机，不会再空转白耗。"
+                   % (nm, body, ("当前等级：" + lvl_name + "\n") if lvl_name else ""))
+            collect.push(cfg, "🎉 %s 已解锁" % nm, txt, log=log)
+            st_c[key] = int(time.time())
+            _state_save(st_c)
+            log("[sched] 已推「%s 已解锁」祝贺（%s）" % (nm, ach))
     if push_it and out:
         # 失效的站点不塞进这条例行进度里 —— 它另外会有一条明确的告警，别重复轰炸
         alive = {k: v for k, v in out.items() if k not in dead}

@@ -102,7 +102,11 @@ def progress(e, proxy=None):
         s = it if isinstance(it, str) else json.dumps(it, ensure_ascii=False)
         if "阅读时长" in s:
             return s
-    return None
+    # 本级已经没有「阅读时长」条件了 —— 通常是**已经升级**，下一级考核别的指标。
+    # 千万别返回 None：上层拿到 None 会当成「取不到 / 登录态可能失效」，
+    # 于是升级成功后每小时推一条「取不到」，看起来像又坏了（2026-10-14 想到的坑）。
+    return "当前等级 %s（本级不再考核阅读时长）" % (
+        d.get("current_level_name") or ("TL%s" % d.get("current_level")))
 
 
 def auth_ok(e, proxy=None):
