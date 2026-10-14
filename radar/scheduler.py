@@ -78,12 +78,51 @@ def do_checkin(cfg, log=print, force=False, no_sleep=True, only=None):
     return res
 
 
+def _prog_note(e, name, pg, st_all, today):
+    """给进度文案补上人最关心的三件事：离目标还差多少、比自己上次涨了多少、今日额度还剩多少。
+
+    为什么：以前只推一句「阅读时长（分钟）：552/600」。一旦心跳因额度停摆，数字就冻住，
+    每小时收到的都是同一条一模一样的消息 —— 收件人根本分不清「在涨」还是「卡死了」，
+    只会得出「不再更新汇报」的结论（2026-10-14 用户报的就是这个）。把原因写进消息里，
+    下次一眼就能看出到底是在跑还是被额度挡住了。
+    """
+    from radar.heartbeat import parse_progress
+    mine = (st_all or {}).get(name) or {}
+    bits = []
+    pv, pt = (None, None)
+    try:
+        pv, pt = parse_progress(pg)
+    except Exception:
+        pass
+    if pv is not None and pt is not None:
+        bits.append("距目标还差 %.0f 分钟" % (pt - pv) if pt > pv else "已达标")
+        prev = mine.get("prog:%s" % today)
+        try:
+            if prev is not None:
+                dv = pv - float(prev)
+                bits.append("较上次 %s%.0f 分钟" % ("+" if dv >= 0 else "", dv))
+        except (TypeError, ValueError):
+            pass
+        mine["prog:%s" % today] = pv
+    d = e.get("daily") or {}
+    budget = float(d.get("read_minutes") or 120)
+    done = float(mine.get("read:%s" % today) or 0) / 60.0
+    if budget > 0:
+        bits.append("今日保活 %.0f/%.0f 分钟" % (done, budget))
+        if done >= budget - 1:
+            bits.append("今日额度已用完，心跳停摆")
+    return ("（" + "，".join(bits) + "）") if bits else ""
+
+
 def do_progress(cfg, log=print, push_it=True):
     """取站内实时阅读进度（upgrade-progress.json，不是有缓存的 summary.json）并推送通知。
 
     取不到时顺手查一下登录态：失效就按「唯一需要人修的点」推 QQ 告警。
     """
+    from radar.discourse import load_state, save_state
     from radar.heartbeat import auth_ok, progress
+    today = today_str()
+    st_all = load_state()
     out = {}
     dead = []
     for e in cfg.get("checkins") or []:
@@ -103,8 +142,16 @@ def do_progress(cfg, log=print, push_it=True):
                     dead.append(name)
             except Exception:
                 pass
-        out[name] = pg or "取不到"
+        try:
+            note = _prog_note(e, name, pg, st_all, today)
+        except Exception:
+            note = ""
+        out[name] = (pg or "取不到") + note
         log("  [%s] 站内实时：%s" % (name, out[name]))
+    try:
+        save_state(st_all)
+    except Exception:
+        pass
     if push_it and out:
         # 失效的站点不塞进这条例行进度里 —— 它另外会有一条明确的告警，别重复轰炸
         alive = {k: v for k, v in out.items() if k not in dead}

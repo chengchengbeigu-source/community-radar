@@ -27,6 +27,7 @@ UserStat#update_time_read! 里，由 User#update_last_seen! 触发：
 """
 import json
 import random
+import re
 import time
 
 from radar.discourse import _base, _j, _req, csrf, load_state, save_state
@@ -119,6 +120,46 @@ def auth_ok(e, proxy=None):
     return ((_j(b).get("current_user") or {}).get("username")) or None
 
 
+_NUMRE = re.compile(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)")
+
+
+def parse_progress(s):
+    """把 '阅读时长（分钟）：552/600' 解析成 (552.0, 600.0)；解析不出返回 (None, None)。"""
+    m = _NUMRE.search(str(s or ""))
+    if not m:
+        return (None, None)
+    try:
+        return (float(m.group(1)), float(m.group(2)))
+    except ValueError:
+        return (None, None)
+
+
+def _upgrade_snapshot(e, proxy=None):
+    """原始 upgrade-progress.json；取不到返回 None。"""
+    proxy = proxy or (e.get("proxy") or "direct")
+    st, b = _req(e, "/session/current.json", proxy=proxy)
+    un = ((_j(b).get("current_user") or {}).get("username")) or e.get("username")
+    if not un:
+        return None
+    st, b = _req(e, "/u/%s/upgrade-progress.json" % un, proxy=proxy)
+    if st != 200:
+        return None
+    d = _j(b)
+    return d if isinstance(d, dict) else None
+
+
+def progress_level(e, proxy=None):
+    """当前等级 + 原始快照，形如 (0, {...})；取不到给 (None, None)。"""
+    d = _upgrade_snapshot(e, proxy)
+    if not d:
+        return (None, None)
+    try:
+        lv = int(d.get("current_level"))
+    except (TypeError, ValueError):
+        lv = None
+    return (lv, d)
+
+
 def run(e, cfg, seconds, log=print):
     """连续发 timings 最多 seconds 秒，返回本次实际计入的秒数。
 
@@ -148,12 +189,56 @@ def run(e, cfg, seconds, log=print):
     if not who:
         raise AuthExpired(name)
 
+    # ── 达标即停（2026-10-14 修）──────────────────────────────────────────
+    # 以前心跳眼里只有「累计 600 分钟」这个死目标，完全不看 stop_at.trust_level：
+    # 升级到目标等级之后还会继续刷一整天，纯属白耗、还多出风控面。现在先看等级。
+    stop_tl = (e.get("stop_at") or {}).get("trust_level")
+    if stop_tl is not None:
+        try:
+            lvl, _snap = progress_level(e, proxy)
+        except Exception:
+            lvl = None
+        if lvl is not None and float(lvl) >= float(stop_tl):
+            log("  [%s] 站内等级已到 %s（stop_at.trust_level=%s），心跳不再启动"
+                % (name, lvl, stop_tl))
+            mine["stop_hit"] = int(float(lvl))
+            save_state(st_all)
+            return 0.0
+
     budget = float(d.get("read_minutes") or 120) * 60
     done = float(mine.get(read_key) or 0)
     left = budget - done
+
+    # ── 收尾自适应（2026-10-14 修）────────────────────────────────────────
+    # 病根：daily.read_minutes（240）是**脚本侧当日额度**，而升级目标（600 分钟）是
+    # **累计**的。当天额度一烧完，之后一整天心跳全部空转 —— 站内数字冻在 552/600，
+    # 收到的那条「在线进度」就变成一动不动的同一个数字，看起来像「不再更新汇报」。
+    # 修法：只要**站内**距目标只剩 finish_gap_minutes 以内，就把额度临时放宽到刚好
+    # 够收尾，一口气补完；平时照旧按 read_minutes 慢节奏，风控节奏不变。
+    gap_min = float(d.get("finish_gap_minutes", 60) or 0)
+    if gap_min > 0:
+        try:
+            pv, pt = parse_progress(progress(e, proxy))
+        except Exception:
+            pv, pt = (None, None)
+        if pv is not None and pt is not None and pt > pv and (pt - pv) <= gap_min:
+            if done + (pt - pv) * 60 > budget:
+                log("  [%s] 收尾模式：站内 %.0f/%.0f，距目标还剩 %.1f 分钟（≤ %.0f），"
+                    "临时把今日额度 %.0f→%.0f 分钟，一口气补完"
+                    % (name, pv, pt, pt - pv, gap_min, budget / 60.0,
+                       (done + (pt - pv) * 60) / 60.0))
+                budget = done + (pt - pv) * 60
+                left = budget - done
+
     if left < 60:
-        log("  [%s] 今日阅读预算已满（%.1f/%.0f 分钟），心跳跳过"
-            % (name, done / 60.0, budget / 60.0))
+        try:
+            pg = progress(e, proxy)
+        except Exception:
+            pg = None
+        mine["stall"] = round(done / 60.0, 1)
+        save_state(st_all)
+        log("  [%s] 今日阅读预算已满（%.1f/%.0f 分钟），心跳跳过%s"
+            % (name, done / 60.0, budget / 60.0, ("｜站内实时：" + pg) if pg else ""))
         return 0.0
 
     seconds = float(min(float(seconds), left))
