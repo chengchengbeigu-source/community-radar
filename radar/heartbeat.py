@@ -33,7 +33,7 @@ import time
 from radar.discourse import _base, _j, _req, csrf, load_state, save_state
 
 DEFAULT_QUIET = [2, 7]              # 夜里 2:00-7:00 不活动（风控友好，可关）
-FLUSH_LO, FLUSH_HI = 58.0, 92.0     # 上报间隔：必须 < 100s（否则服务端不计），但上下浮动大一些
+FLUSH_LO, FLUSH_HI = 50.0, 54.0     # 上报间隔：必须 < 100s（否则服务端不计），但上下浮动大一些
 TOPIC_DWELL = (2 * 60, 18 * 60)     # 2~18 分钟换一帖：有时扫两眼就走，有时一帖看很久
 PAGE_CHOICES = (0, 1, 2, 3)
 # 像人一样中途离开：连续活动这么久之后，随机歇一会儿（这段时间不产生任何请求）
@@ -329,7 +329,9 @@ def run(e, cfg, seconds, log=print):
         else:
             n_bad += 1
             log("  [%s] timings HTTP %s，退避 30s" % (name, st))
-            if st in (0, 403, 429):
+            if st == 0:
+                time.sleep(3)     # 网络层抖动（SSL EOF/连接被掐）快速重试，别赔 30 秒
+            elif st in (403, 429):
                 time.sleep(30)
             # 401/403 连着两次就往登录态上查一下 —— 是 cookie 过期了就立刻上报，
             # 别在这里闷头重试（机器修不了，只有人能重新登录）。
