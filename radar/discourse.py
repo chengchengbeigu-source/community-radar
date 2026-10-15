@@ -283,8 +283,17 @@ def run_daily(e, cfg, log=print, force=False):
     mine = st_all.setdefault(name, {})
     today = time.strftime("%Y-%m-%d")
 
-    # 停机标记（等级已达 / 被拦）
-    if mine.get("stopped") and not force:
+    # 停机语义（2026-10-15 改）：
+    #   stop_at.trust_level 到等级后只停「阅读保活」，**每日签到照做**。理由：签到是
+    #   白银档每天 5 能量（青铜 1），几乎零成本、不刷时长、不碰保活那套风控节奏 ——
+    #   跟着一起停掉等于每天白丢 5 个。想回到老行为（连签到一起停）就把
+    #   stop_at.keep_checkin 显式设成 false。
+    stop_cfg = e.get("stop_at") or {}
+    stop_tl = stop_cfg.get("trust_level")
+    keep_ck = bool(stop_cfg.get("keep_checkin", True))
+
+    # 停机标记（等级已达 / 被拦）—— keep_checkin 时不拦整段，只拦保活
+    if mine.get("stopped") and not force and not keep_ck:
         return "stopped", f"已停机：{mine.get('reason')}（{mine.get('stopped_at','')[:10]}）"
 
     # 风控：活跃时段
@@ -304,15 +313,17 @@ def run_daily(e, cfg, log=print, force=False):
     tl = info.get("trust_level")
     log(f"  [{name}] {info['username']} 当前 {info['level_name']}（TL{tl}，积分 {info.get('points')}）")
 
-    # 已达目标等级 → 自动停机 + 通知
-    stop_tl = (e.get("stop_at") or {}).get("trust_level")
-    if stop_tl is not None and isinstance(tl, int) and tl >= stop_tl:
+    # 已达目标等级 → 停保活（首次停机推一次通知）；签到是否继续由 keep_checkin 决定。
+    # 这里**不能 return**：一 return 就走不到下面的签到步骤，达标当天起签到就永远不做了。
+    reached = stop_tl is not None and isinstance(tl, int) and tl >= stop_tl
+    if reached and not mine.get("stopped"):
         mine.update({"stopped": True, "reason": f"等级已达 {info['level_name']}（TL{tl}）",
                      "stopped_at": time.strftime("%Y-%m-%d %H:%M:%S")})
         save_state(st_all)
-        if (e.get("stop_at") or {}).get("notify", True):
-            notify(f"{name} 任务自动停机", f"已升到 {info['level_name']}（TL{tl}），例行任务与保活任务已停。")
-        return "stopped", f"等级已达 {info['level_name']}，自动停机"
+        if stop_cfg.get("notify", True):
+            notify(f"{name} 保活任务自动停机",
+                   f"已升到 {info['level_name']}（TL{tl}），阅读保活已停；"
+                   + ("每日签到继续。" if keep_ck else "例行任务与保活任务已停。"))
 
     before = (stats(e, proxy, info.get("username")) or {}).get("time_read")
     spent_list = []
@@ -334,8 +345,10 @@ def run_daily(e, cfg, log=print, force=False):
                 notify(f"{name} 例行任务被拦", det + "｜今天不再重试")
                 return "blocked", det
 
-    # 2) 在线时长（每天总量封顶）
-    if d.get("read", True):
+    # 2) 在线时长（每天总量封顶）—— 这就是「保活」，达标就整段跳过
+    if reached:
+        spent_list.append("保活已停机（等级已达，不再刷时长）")
+    elif d.get("read", True):
         budget = float(d.get("read_minutes") or 20) * 60
         read_key = f"read:{today}"
         done = float(mine.get(read_key) or 0)
