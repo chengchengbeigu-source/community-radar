@@ -149,6 +149,7 @@ def do_progress(cfg, log=print, push_it=True):
     out = {}
     dead = []
     met = []          # 本次观测到「已达标」的站点，循环后再统一推 🎉（避免在循环里发通知）
+    stalled = []      # 已按 stop_at 停机的站点：保活停了，数字不会再动，别每小时推同一条
     for e in cfg.get("checkins") or []:
         if not e.get("enabled", True):
             continue
@@ -192,6 +193,11 @@ def do_progress(cfg, log=print, push_it=True):
             _ach = "T%d" % int(_pt)
         if _ach:
             met.append((name, out[name], _ach, _lv))
+        # 停机判定单独记一份：签到照做，但「在线时长」这条线已经不跑了，
+        # 再每轮推一次「在线进度」就是纯噪音 —— 数字冻住不动，收件人分不清
+        # 是「在涨」还是「卡死了」（2026-10-14 那次抱怨的正是这个）。
+        if _lv is not None and _stop_tl is not None and float(_lv) >= float(_stop_tl):
+            stalled.append(name)
     try:
         save_state(st_all)
     except Exception:
@@ -203,7 +209,7 @@ def do_progress(cfg, log=print, push_it=True):
             notify_unlocked(nm, cfg, body, ach, lv, log=log)
     if push_it and out:
         # 失效的站点不塞进这条例行进度里 —— 它另外会有一条明确的告警，别重复轰炸
-        alive = {k: v for k, v in out.items() if k not in dead}
+        alive = {k: v for k, v in out.items() if k not in dead and k not in stalled}
         if alive:
             body = "；".join("%s %s" % (k, v) for k, v in alive.items())
             collect.push(cfg, "在线进度 " + today_str(), body, log=log)
