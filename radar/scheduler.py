@@ -28,7 +28,6 @@ DEFAULTS = {
     "digest_hour": 20,
     "hb_slice_seconds": 600,
     "config_reload_minutes": 30,
-    "serv00_minutes": 30,
 }
 
 STATE_PATH = os.path.join(DATA_DIR, "scheduler.json")
@@ -352,12 +351,6 @@ def run(cfg, minutes, log=print):
     """在 minutes 分钟里按任务表循环：例行同步 / 采集 / 进度 / 日报 / 心跳。"""
     sch = dict(DEFAULTS)
     sch.update(cfg.get("schedule") or {})
-    try:
-        from radar.serv00 import check as serv00_check
-    except Exception as _e:
-        log("[sched] serv00 模块不可用：%s" % _e)
-        serv00_check = None
-
     st = _state_load()
 
     start = time.time()
@@ -366,7 +359,6 @@ def run(cfg, minutes, log=print):
     every_collect = float(sch["collect_minutes"]) * 60
     every_prog = float(sch["progress_minutes"]) * 60
     every_reload = float(sch["config_reload_minutes"]) * 60
-    every_serv00 = float(sch["serv00_minutes"]) * 60
     hb_slice = float(sch["hb_slice_seconds"])
     ck_hour = int(sch["checkin_hour"])
     dg_hour = int(sch["digest_hour"])
@@ -374,7 +366,6 @@ def run(cfg, minutes, log=print):
     next_collect = start                      # 起来的头一件事就是采一轮
     next_prog = start + 5 * 60                # 5 分钟后先报一次阅读进度，让你知道活着
     next_reload = start + every_reload
-    next_serv00 = start + 60                  # 起来 1 分钟后先查一次 Serv00 申请
     auth_dead_until = 0.0                     # 登录态失效后的静默期（到点再探一次）
 
     log("[sched] 常驻开始：%.0f 分钟｜采集 %g 分钟一轮｜进度 %g 分钟一轮｜"
@@ -404,7 +395,6 @@ def run(cfg, minutes, log=print):
                 every_collect = float(sch["collect_minutes"]) * 60
                 every_prog = float(sch["progress_minutes"]) * 60
                 every_reload = float(sch["config_reload_minutes"]) * 60
-                every_serv00 = float(sch["serv00_minutes"]) * 60
                 hb_slice = float(sch["hb_slice_seconds"])
                 ck_hour = int(sch["checkin_hour"])
                 dg_hour = int(sch["digest_hour"])
@@ -436,12 +426,6 @@ def run(cfg, minutes, log=print):
             if _safe("日报", lambda: do_digest(cfg, log=log), log) is not None:
                 st["digest_day"] = day
                 _state_save(st)
-
-        # 5.5) Serv00 免费主机申请结果（注册后只能等邮件，探针理由见 radar/serv00.py）
-        if now >= next_serv00 and serv00_check:
-            log("[sched] → Serv00 申请结果检查")
-            _safe("serv00", lambda: serv00_check(cfg, log=log), log)
-            next_serv00 = time.time() + every_serv00
 
         # 6) 心跳一片：把剩下的时间用去累计在线时长
         left = deadline - time.time()

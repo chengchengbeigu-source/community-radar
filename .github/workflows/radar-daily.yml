@@ -128,9 +128,6 @@ jobs:
           RADAR_QQ_OPENID: ${{ secrets.RADAR_QQ_OPENID }}
           RADAR_TG_BOT: ${{ secrets.RADAR_TG_BOT }}
           RADAR_TG_CHAT: ${{ secrets.RADAR_TG_CHAT }}
-          # Serv00 申请结果监测：读注册邮箱（只读 IMAP，见 radar/serv00.py）
-          SERV00_GMAIL_USER: ${{ secrets.SERV00_GMAIL_USER }}
-          SERV00_GMAIL_PASS: ${{ secrets.SERV00_GMAIL_PASS }}
           RADAR_MINUTES: ${{ github.event.inputs.minutes || '290' }}
           RADAR_ONCE: ${{ github.event.inputs.once || '0' }}
           RADAR_FORCE: ${{ github.event.inputs.force || '0' }}
