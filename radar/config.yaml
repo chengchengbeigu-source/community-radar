@@ -1,33 +1,28 @@
-# 本文件由「配置面板」插件 UI 写入（本机 2026-10-12 19:18:15）
-# 公开仓库版本：不含任何密钥，密钥一律走 GitHub Secrets，由 radar/github_secrets.py 灌入
 window_days: 14
 notify: true
-report_title: 内容摘要
+report_title: 社区情报雷达
 outbox_keep_days: 60
-# 推送节流：距上次「采集简报」推送不足这么多分钟就跳过。0 = 不节流。
-# 采集本身现在是每 collect_minutes 分钟一轮（见下面 schedule），有新条目就推，
-# 所以这里只当防抖用，压得很低。例行同步/进度/日报不受它管，各有各的间隔。
-# 见 radar/collect.py 的 notify_gap_ok()。
 notify_min_gap_minutes: 10
-# 过滤门槛（radar/report.py 的 filter_rows()）：低于这个标准的帖子不进简报、不推送通知。
-# 之前只排序不剔除，低质内容/水贴照样推 —— 现在真砍掉。
-min_stars: 3          # 星级 < 3 的一律不推（3★ 起才算「备着」）
-min_score: 0          # 裸评分低于这个数的也砍
+push_gap_seconds: 4
+min_stars: 3
+min_score: 0
+max_per_push: 10
+push_translate: true
 proxy: ''
-# ── 常驻任务表（radar/scheduler.py 读；GitHub cron 只管把一轮拉起来）──
-# 「几点做什么」看这里，不看 cron：GitHub 的 schedule 实测延迟过 8 小时 48 分，
-# 把「每晚 20:00 汇报」押在 cron 上等于赌博。
 schedule:
-  collect_minutes: 20          # 每这么久采集一次；有新条目立刻推送通知
-  progress_minutes: 60         # 每这么久推一条在线时长进度
-  checkin_hour: 8              # 每天这个整点后第一次循环做例行同步，并推结果（漏了会补）
-  digest_hour: 20              # 每天这个整点推当日总结 = 晚上 8 点
-  hb_slice_seconds: 600        # 心跳切片：每跑这么久回来看一次任务表
-  config_reload_minutes: 30    # 每这么久从 origin/main 拉一次 config.yaml
-                               # → 手机上改完配置，最快 30 分钟就在云端生效
+  collect_minutes: 20
+  progress_minutes: 60
+  checkin_hour: 8
+  digest_hour: 20
+  hb_slice_seconds: 600
+  config_reload_minutes: 30
 sources:
   nodeseek:
     enabled: true
+    proxy: direct
+    # CF 边缘反代（workers.dev 被 SNI 阻断，改用自有域名走 Workers Route）
+    rss_via: "https://nds.582365.xyz/__proxy?url="
+    rss_pages: 2
     listings:
     - /
     - /page-2
@@ -47,11 +42,14 @@ sources:
   nodeloc:
     proxy: direct
     enabled: true
+    base: https://www.nodeloc.com
+    username: c47892969-ui
+    cookie_file: radar/secrets/nodeloc.cookie
     latest_pages: 4
     search_terms:
     - 免费
     - 公益
-    - 免费
+    - 白嫖
     - 福利
     - 优惠
     - 教程
@@ -82,15 +80,14 @@ sources:
     # 钉死的单推：用户点名要跟的，永远不丢
     tweets:
     - https://x.com/opencode/status/2113699251616412056
-
 keywords:
   groups:
-  - tag: 公益/免费
+  - tag: 公益/白嫖
     weight: 3
     kws:
     - 公益
     - 公益站
-    - 免费
+    - 白嫖
     - 免费领
     - 免费送
     - 免费使用
@@ -106,7 +103,6 @@ keywords:
     - free credits
     - open weights
     - no cost
-    - free access
   - tag: VPS/主机
     weight: 3
     kws:
@@ -125,7 +121,6 @@ keywords:
     - free cloud
     - free instance
     - trial
-    - always free
   - tag: 教程
     weight: 2
     kws:
@@ -157,7 +152,6 @@ keywords:
     - coupon
     - promo code
     - deal
-    - black friday
   - tag: 注册/额度
     weight: 2
     kws:
@@ -180,7 +174,6 @@ keywords:
     - invite code
     - api credit
     - monthly credits
-    - free credits
   - tag: 活动/抽奖
     weight: 2
     kws:
@@ -199,25 +192,6 @@ keywords:
     - ends today
     - ends soon
     - while supplies last
-    - giveaway
-  - tag: 资源/节点
-    weight: 1
-    kws:
-    - 图床
-    - cdn
-    - 对象存储
-    - oss
-    - 网盘
-    - 订阅
-    - 机场
-    - 免费机场
-    - 中转
-    - 镜像
-    - 节点
-    - mirror
-    - endpoint
-    - object storage
-    - free cdn
   - tag: 模型/发布
     weight: 2
     kws:
@@ -234,8 +208,22 @@ keywords:
     - now on
     - new model
     - general availability
-    - now supports
-
+  - tag: 资源/节点
+    weight: 1
+    kws:
+    - 图床
+    - cdn
+    - 对象存储
+    - oss
+    - 网盘
+    - 订阅
+    - 机场
+    - 免费机场
+    - 中转
+    - 镜像
+    - 节点
+    - mirror
+    - endpoint
   negative:
     weight: -2
     kws:
@@ -256,8 +244,6 @@ keywords:
     - 返利
     - 招租
     - 代购
-  # 直接丢：**标题**里出现任何一个就等于低质内容/交易贴，连库都不进。
-  # 故意只放「一眼就是低质内容」的词，宁可少杀不可错杀 —— 误杀 = 漏掉真内容。
   drop:
   - 出售
   - 收购
@@ -275,7 +261,6 @@ keywords:
   - 低价出
   - 有偿
   - 招租
-  # 直接丢：这些板块是闲聊/晒图/撕逼，不是内容
   drop_boards:
   - meaningless
   - photo-share
@@ -288,13 +273,13 @@ keywords:
     promotion: 2.5
     trade: 1
     carpool: 1
+    x/官方发布: 1.5
     daily: 0
     life: 0
     meaningless: -1
     expose: -1.5
     sandbox: -0.5
     photo-share: -1
-    x/官方发布: 1.5
   urgent:
   - 限时
   - 最后一天
@@ -313,34 +298,20 @@ checkins:
   jitter_minutes: 0
   kind: newapi
   proxy: direct
-  access_token: ''
-  user_id: ''
+  user_id: '2930'
 - name: nodeloc
   kind: discourse
   enabled: true
   base: https://www.nodeloc.com
-  username: ''
-  cookie_file: radar/secrets/nodeloc.cookie
   proxy: direct
   jitter_minutes: 30
+  username: c47892969-ui
+  cookie_file: radar/secrets/nodeloc.cookie
   daily:
     checkin: true
-    # read 交给心跳（radar/heartbeat.py 直接 POST /topics/timings）：服务端按真实
-    # 墙上时钟 1:1 计入、单次 60 秒封顶，累计够 600 分钟必须真熬够时间。这里关掉只做
-    # 例行同步 + 登录态体检，避免 run_daily 每轮再重复上报一次 dwell。
     read: false
     read_mode: api
-    # 每日上限 240 分钟（4 小时）—— 一个真人再勤也就这样了。不要急着凑够 600 分钟：
-    # 上限压低 + 心跳里随机离开（35~70 分钟活动后歇 3~12 分钟），
-    # 宁可多花两天，也不要因为节奏太规整被当成机器。
-    read_minutes: 240
-    # 收尾自适应（2026-10-14 加）：站内累计进度距目标只剩这么多分钟以内时，
-    # 临时忽略上面的日上限，一口气把差的那点补完。不加这一条会出问题：
-    # 240/天 的日额度撞上 600 分钟的累计目标，额度一满就冻结一整天，
-    # 用户看到的「在线进度」就是同一个数字来回推 —— 像「阅读时长不再更新」。
-    # 2026-10-15 收尾期间曾临时给到 240（站内 536/600 时差额 64 分钟 > 60，**差 4 分钟
-    # 没触发**收尾，额度一满就整天整天空转）。600 分钟已于 2026-10-15 补满、TL1 白银已
-    # 解锁并停机，窗口不再需要，恢复常规值 60。
+    read_minutes: 240.0
     finish_gap_minutes: 60
     topics_per_run: 80
     dwell_s:
@@ -349,23 +320,37 @@ checkins:
     gap_s:
     - 25
     - 90
-    # 2026-10-15 收尾期间曾临时改成 active_hours 0-24 + quiet_hours []（不静默），
-    # 目的是把累计阅读时长尽快补到 600 → 解锁白银（TL1）。该目标已于 2026-10-15 达成
-    # （608/600，L1），stop_at 已自动停机，24 小时窗口随之关闭，恢复常规作息。
-    # 注意 heartbeat.py 取 quiet_hours 时必须区分「没配」和「配成空」：[] 是假值，
-    # 写成 `or DEFAULT_QUIET` 会把「关掉夜间静默」悄悄换回默认的 2:00-7:00。
     active_hours:
-    - 8
-    - 23
+    - 0
+    - 24
     quiet_hours:
     - 2
     - 7
-  stop_at:
-    trust_level: 1
-    notify: true
-    # 2026-10-15 加：达标后**只停阅读保活，不停每日签到**。
-    # 签到是白银档每天 5 能量（青铜 1），零成本、不刷时长、不碰保活那套风控节奏；
-    # 跟着一起停等于每天白丢 5 个。注意光改配置不够 —— discourse.run_daily 原来在
-    # 「看等级」那一步就 return，签到代码永远走不到，配套改了那里（同一提交）。
-    # 想恢复老行为（连签到一起停）：改成 false。
-    keep_checkin: true
+
+- name: nodeloc2
+  kind: discourse
+  enabled: true
+  base: https://www.nodeloc.com
+  proxy: direct
+  jitter_minutes: 30
+  username: chengbeigu
+  cookie_file: radar/secrets/nodeloc2.cookie
+  daily:
+    checkin: true
+    read: false
+    read_mode: api
+    read_minutes: 190.0
+    finish_gap_minutes: 60
+    topics_per_run: 80
+    dwell_s:
+    - 45
+    - 150
+    gap_s:
+    - 25
+    - 90
+    active_hours:
+    - 0
+    - 24
+    quiet_hours:
+    - 2
+    - 7

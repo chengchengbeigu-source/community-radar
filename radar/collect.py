@@ -159,7 +159,23 @@ def run_collect(cfg, window=None, source=None, do_notify=True, log=print):
         if not ok:
             log(f"[radar] 跳过推送：{why}")
         else:
-            stat["pushed"] = push(
-                cfg, cfg.get("report_title", "community-radar") + " " + today_str(),
-                note, stamp=True, log=log)
+            # ── 逐条推送（2026-10-26）──
+            # 旧行为把 N 条压成 400 字符摘要，标题砍到 24 字，用户看到的
+            # 是「MiniMax M3.1 Flash is no; Today @MiniMax_AI releases;」这种碎片。
+            # 现在一条一个消息：日期 / 渠道 / 标题 / 正文 / 链接，单条读完。
+            msgs = report.build_notes(good, today_str(), cfg)
+            gap_s = float(cfg.get("push_gap_seconds", 3) or 0)
+            sent = 0
+            for i, (mt, mb, mr) in enumerate(msgs):
+                if i and gap_s:
+                    time.sleep(gap_s)      # 条间隔，防被平台当刷屏
+                r = notify(mt, mb)
+                stat.setdefault("push_detail", []).append(r)
+                log(f"[radar] 推送 {i+1}/{len(msgs)}：{r}｜{mt[:40]}")
+                if notify_ok(r):
+                    sent += 1
+            if sent:
+                notify_stamp()
+            stat["pushed"] = sent > 0
+            stat["push_sent"] = sent
     return stat

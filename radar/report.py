@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """生成每日 Markdown 简报 + 通知文案。"""
 import json
+import re
 from radar.util import fmt_age
 
 HINT = {"公益/免费": "先确认还活着/要不要注册", "VPS/主机": "看额度与到期时间，够用就领",
@@ -103,3 +104,98 @@ def digest(cfg, day, fresh_by_src, five, four, three, dropped,
     if tot == 0 and not (five or four or three):
         L += ["", "（今天没有值得推的新帖）"]
     return "\n".join(L)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  逐条推送文案（2026-10-26 新增）
+#
+#  旧行为：N 条压成一条 400 字符的摘要，标题被砍到 24 字，
+#  用户看到的是「MiniMax M3.1 Flash is no; Today @MiniMax_AI releases;」
+#  这种半截碎片，完全不知道在说什么、点去哪。
+#
+#  新行为：一条一个消息，固定四段结构 ——
+#      日期 / 渠道 / 标题 / 正文 / 链接
+#  单条即可读完，不需要再翻 outbox 文件。
+# ═══════════════════════════════════════════════════════════════
+
+# 渠道中文名：推文里写「X/官方发布」比写 x 清楚
+SRC_CN = {"x": "X（推特）", "nodeseek": "NodeSeek", "nodeloc": "NodeLoc"}
+
+
+def _clip(s, n):
+    """按字符裁，超了加省略号。中文按字算，别用字节。"""
+    s = " ".join(str(s or "").split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _title_of(r, limit=90):
+    """标题：取正文首句（到句号/问号/换行为止），没有就用整个摘要。"""
+    raw = " ".join(str(r.get("title") or "").split())
+    if not raw:
+        return "（无标题）"
+    m = re.search(r"[.!?。！？]\s", raw)
+    if m and m.start() >= 12:
+        raw = raw[: m.start() + 1]
+    return _clip(raw, limit)
+
+
+def one_msg(r, day, cfg=None, translate=True):
+    """单条 → 一条完整的推送消息。四段固定结构，缺项不占行。
+
+    返回 (title, text)：title 进通知标题栏，text 是正文。
+    translate=True 时正文翻成中文（原文附在后面），英文推文不翻译的话
+    用户读起来就是天书 —— 2026-10-26 实测反馈。
+    """
+    title_cfg = (cfg or {}).get("report_title", "社区情报雷达")
+    stars = "★" * int(r.get("stars") or 0)
+    src = SRC_CN.get(str(r.get("source") or ""), str(r.get("source") or ""))
+    board = str(r.get("board") or "")
+    # 板块里若已含来源名就不重复（x 源的 board 是 "X/官方发布"）
+    chan = board if board else src
+    if board.startswith("X/") and src.startswith("X"):
+        chan = "X（推特）· " + board.split("/", 1)[1]
+
+    raw_title = _title_of(r)
+    body_en = _clip(r.get("excerpt") or r.get("title") or "", 400)
+
+    zh_title, zh_body = raw_title, body_en
+    if translate:
+        try:
+            from radar import translate as _tr
+            if _tr.needed(raw_title):
+                zh_title = _tr.strip_emoji(_tr.to_zh(raw_title) or raw_title)
+            if _tr.needed(body_en):
+                zh_body = _tr.strip_emoji(_tr.to_zh(body_en) or body_en)
+        except Exception:
+            pass          # 翻译是锦上添花，失败就用原文
+
+    # 标题栏优先中文（英文原文一样时说明没翻，不重复标）
+    head = f"{stars} {zh_title}"
+    L = [f"📅 {day}", f"📡 {chan}"]
+    author = str(r.get("author") or "").strip()
+    if author:
+        L.append(f"👤 @{author}")
+    L.append("")
+    L.append(zh_body)
+    # 翻了才附原文；没翻就别重复贴两遍
+    if zh_body != body_en:
+        L += ["", "——— 原文 ———", body_en]
+    L.append("")
+    url = str(r.get("url") or "").strip()
+    if url:
+        L.append(url)
+    return head[:60], "\n".join(L)
+
+
+def build_notes(rows, day, cfg=None):
+    """把 rows 拆成「一条一个消息」的列表，按星级降序。
+
+    返回 [(title, text, row)]，调用方逐条 push。
+    超过 max_per_push 条时只发前 N 条（防刷屏），其余留在简报里。
+    """
+    cap = int((cfg or {}).get("max_per_push", 10) or 10)
+    out = []
+    for r in sorted(rows, key=lambda x: (-(x.get("stars") or 0), -(x.get("score") or 0)))[:cap]:
+        t, b = one_msg(r, day, cfg, translate=bool((cfg or {}).get("push_translate", True)))
+        out.append((t, b, r))
+    return out

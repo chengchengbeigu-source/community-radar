@@ -252,6 +252,9 @@ def _to_item(t, screen_name, window_days):
     """单推 → radar 通用 item。"""
     text = (t.get("text") or "").replace("\n", " ").strip()
     title = text[:180] if text else f"@{screen_name} 的推文"
+    # 转推：标一下，免得以为是号主原创
+    if t.get("is_rt") and t.get("screen_name") and t.get("screen_name") != screen_name:
+        title = f"[转推 @{t['screen_name']}] {title}"
     url = t.get("url") or ""
     # fxtwitter 给的 url 是规范链接；兜底路没 url 就自己拼
     if not url or not url.startswith("http"):
@@ -263,8 +266,9 @@ def _to_item(t, screen_name, window_days):
         "title": title,
         "url": url,
         "board": "X/官方发布",
-        # 盯的账号 vs 实际作者：转推时两者不同，报「谁转的」更有用
-        "author": screen_name or t.get("screen_name") or "",
+        # 实际作者优先（转推时 t.screen_name 才是写这句话的人）；
+        # 盯的账号另存 raw.via，需要时能看到「谁转的」。
+        "author": t.get("screen_name") or screen_name or "",
         "excerpt": text[:300],
         "age_text": (t.get("created_raw") or "")[:19],
         "age_days": _age_days(t.get("created_at")),
