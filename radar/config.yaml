@@ -71,6 +71,13 @@ sources:
     # 烧饼社区：2=福利放送 4=技术交流（羊毛+干货两块）
     forums: [2, 4]
     rss_period: "24h"
+    # 列表页只有标题，正文要进单帖页抓。每轮最多补这么多条（防拖慢采集）
+    body_fetch_max: 12
+  # 通用 RSS 源：面板里加一行就能接一个新站，不用写代码
+  feed:
+    enabled: true
+    proxy: direct
+    feeds: []
   x:
     enabled: true
     proxy: direct

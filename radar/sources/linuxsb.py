@@ -70,6 +70,58 @@ def _parse_forum(page_html, fid):
     return out
 
 
+_BODY_PATS = [
+    r'<div class="nb-editor-post-content"[^>]*>(.*?)</div>',
+    r'<div class="post-readability-content"[^>]*>(.*?)</div>',
+    r'<div class="long-content-fold-content"[^>]*>(.*?)</div>',
+]
+
+
+def _extract_body(html):
+    """从单帖页抠正文。列表页只给标题，正文必须再抓一次单帖页。
+
+    正文在 nb-editor-post-content 里（2026-10-26 实测：post-content /
+    post-body 都是外壳，抠出来只有「1523 130」这种计数垃圾）。
+    """
+    for pat in _BODY_PATS:
+        m = re.search(pat, html, re.S)
+        if not m:
+            continue
+        txt = re.sub(r'<script[^>]*>.*?</script>', ' ', m.group(1), flags=re.S | re.I)
+        txt = re.sub(r'<style[^>]*>.*?</style>', ' ', txt, flags=re.S | re.I)
+        txt = re.sub(r'<br\s*/?>', ' ', txt, flags=re.I)
+        txt = re.sub(r'</p>|</li>|</div>', ' ', txt, flags=re.I)
+        txt = re.sub(r'<[^>]+>', ' ', txt)
+        txt = _html.unescape(txt)
+        txt = re.sub(r'[ \t\u3000]+', ' ', txt)
+        txt = re.sub(r'\n\s*\n+', '\n', txt).strip()
+        if len(txt) >= 20:
+            return txt[:1200]
+    return ""
+
+
+def _fetch_bodies(items, cap, prx, hdr, log):
+    """给缺正文的条目补抓单帖页，最多 cap 条（按标题里「福利/免费」优先）。"""
+    todo = [it for it in items if not it.get("excerpt")]
+    if not todo:
+        return 0
+    # 有羊毛信号的先补，纯技术贴排后面
+    kw = ("免费", "白嫖", "福利", "送", "抽", "额度", "试用", "优惠", "折", "兑换码")
+    todo.sort(key=lambda it: 0 if any(k in it["title"] for k in kw) else 1)
+    done = 0
+    for it in todo[:cap]:
+        try:
+            h = http_get(it["url"], proxy=prx, headers=hdr)
+            body = _extract_body(h)
+            if body:
+                it["excerpt"] = body
+                done += 1
+        except Exception:
+            continue
+    log(f"  [linuxsb] 补抓正文 {done}/{min(len(todo), cap)} 条")
+    return done
+
+
 def _age_days(pub):
     if not pub:
         return None
@@ -130,4 +182,9 @@ def collect(cfg, scfg, window_days, log=print):
             "raw": {},
         })
     log(f"  [linuxsb] 合计 {len(items)} 条")
+
+    # ── 3) 补正文：列表页只有标题，正文得进单帖页 ──
+    cap = int(scfg.get("body_fetch_max", 12) or 0)
+    if cap > 0:
+        _fetch_bodies(items, cap, prx, hdr, log)
     return items

@@ -48,6 +48,24 @@ def upsert_post(c, p):
            json.dumps(p.get("tags", []), ensure_ascii=False),
            json.dumps(p.get("reason", []), ensure_ascii=False), now,
            json.dumps(p.get("raw", {}), ensure_ascii=False)[:4000]))
+    else:
+        # 老帖也要更新 —— 2026-10-26 实锤：只 INSERT 不 UPDATE 的话，
+        # 补抓到的正文、重算的星级、修过的标题全都进不了库，
+        # 库里永远是第一次抓到的那份（当时 excerpt 还是空的）。
+        # excerpt 用「更长者胜」：宁可留长正文，也别被后来的空值覆盖。
+        old_ex = c.execute("SELECT excerpt FROM posts WHERE uid=?", (p["uid"],)).fetchone()
+        old_len = len((old_ex["excerpt"] or "") if old_ex else "")
+        new_ex = p.get("excerpt", "") or ""
+        keep_ex = new_ex if len(new_ex) >= old_len else (old_ex["excerpt"] if old_ex else "")
+        c.execute("""UPDATE posts SET title=?,url=?,board=?,author=?,excerpt=?,
+                     age_text=?,age_days=?,created_ts=?,score=?,stars=?,tags=?,reason=?,raw=?
+                     WHERE uid=?""",
+                  (p.get("title", ""), p.get("url", ""), p.get("board", ""), p.get("author", ""),
+                   keep_ex, p.get("age_text", ""), p.get("age_days"), p.get("created_ts"),
+                   p.get("score", 0), p.get("stars", 0),
+                   json.dumps(p.get("tags", []), ensure_ascii=False),
+                   json.dumps(p.get("reason", []), ensure_ascii=False),
+                   json.dumps(p.get("raw", {}), ensure_ascii=False)[:4000], p["uid"]))
     c.commit()
     return is_new
 

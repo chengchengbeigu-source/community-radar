@@ -119,7 +119,46 @@ def digest(cfg, day, fresh_by_src, five, four, three, dropped,
 # ═══════════════════════════════════════════════════════════════
 
 # 渠道中文名：推文里写「X/官方发布」比写 x 清楚
-SRC_CN = {"x": "X（推特）", "nodeseek": "NodeSeek", "nodeloc": "NodeLoc"}
+SRC_CN = {
+    "x": "X（推特）",
+    "nodeseek": "NodeSeek",
+    "nodeloc": "NodeLoc",
+    "linuxdo": "linux.do",
+    "linuxsb": "linux.sb",
+}
+
+
+def _rg(r, k, d=None):
+    """取字段：sqlite3.Row 没有 .get()，dict 有。两种都要吃。
+
+    2026-10-26 实锤：build_notes 里对 Row 调 .get() 直接 AttributeError，
+    逐条推送整条链路炸掉（简报写出去了、一条都没发出去）。
+    """
+    try:
+        v = r[k]
+    except (KeyError, IndexError, TypeError):
+        return d
+    return d if v is None else v
+
+
+_RSS_NOISE = [
+    r"\]\]>$",                                  # RSS CDATA 尾巴
+    r"\n?\s*\d+\s*个帖子\s*-\s*\d+\s*位参与者\s*阅读完整话题\s*$",
+    r"(?m)^\s*(阅读完整话题|Read the full topic)\s*$",
+    r"(?m)^\s*https?://\S+\s*$",               # 正文里裸挂的重复链接
+]
+
+
+def _clean_body(s):
+    """清掉 RSS 转来的噪音：CDATA 尾巴 / 「N 个帖子 - N 位参与者」/ 裸链接。
+
+    Discourse 的 RSS description 会带这些，直接推出去用户看到的就是
+    「…取消工单都写了。 4 个帖子 - 4 位参与者 阅读完整话题 ]]>」这种尾巴。
+    """
+    s = str(s or "")
+    for pat in _RSS_NOISE:
+        s = re.sub(pat, "", s, flags=re.I | re.S if pat.startswith("(?m)") else re.I)
+    return " ".join(s.split()).strip()
 
 
 def _clip(s, n):
@@ -130,7 +169,7 @@ def _clip(s, n):
 
 def _title_of(r, limit=90):
     """标题：取正文首句（到句号/问号/换行为止），没有就用整个摘要。"""
-    raw = " ".join(str(r.get("title") or "").split())
+    raw = " ".join(str(_rg(r, "title") or "").split())
     if not raw:
         return "（无标题）"
     m = re.search(r"[.!?。！？]\s", raw)
@@ -147,16 +186,21 @@ def one_msg(r, day, cfg=None, translate=True):
     用户读起来就是天书 —— 2026-10-26 实测反馈。
     """
     title_cfg = (cfg or {}).get("report_title", "社区情报雷达")
-    stars = "★" * int(r.get("stars") or 0)
-    src = SRC_CN.get(str(r.get("source") or ""), str(r.get("source") or ""))
-    board = str(r.get("board") or "")
-    # 板块里若已含来源名就不重复（x 源的 board 是 "X/官方发布"）
-    chan = board if board else src
-    if board.startswith("X/") and src.startswith("X"):
-        chan = "X（推特）· " + board.split("/", 1)[1]
+    stars = "★" * int(_rg(r, "stars") or 0)
+    src = SRC_CN.get(str(_rg(r, "source") or ""), str(_rg(r, "source") or ""))
+    board = str(_rg(r, "board") or "").strip()
+    # 渠道行 = 来源 · 板块。来源永远在最前 —— 2026-10-26 用户反馈：
+    # 原来写成 chan = board if board else src，linux.sb 的 board 是「福利放送」，
+    # 结果整条推送看不出是哪个论坛来的。
+    chan = src
+    if board and board != src:
+        # x 源的 board 形如 "X/官方发布"，去掉重复的来源前缀
+        b = board.split("/", 1)[1] if board.startswith("X/") else board
+        if b and b != src:
+            chan = src + " · " + b
 
     raw_title = _title_of(r)
-    body_en = _clip(r.get("excerpt") or r.get("title") or "", 400)
+    body_en = _clip(_clean_body(_rg(r, "excerpt") or _rg(r, "title") or ""), 400)
 
     zh_title, zh_body = raw_title, body_en
     if translate:
@@ -172,16 +216,23 @@ def one_msg(r, day, cfg=None, translate=True):
     # 标题栏优先中文（英文原文一样时说明没翻，不重复标）
     head = f"{stars} {zh_title}"
     L = [f"📅 {day}", f"📡 {chan}"]
-    author = str(r.get("author") or "").strip()
+    author = str(_rg(r, "author") or "").strip()
     if author:
         L.append(f"👤 @{author}")
     L.append("")
-    L.append(zh_body)
-    # 翻了才附原文；没翻就别重复贴两遍
-    if zh_body != body_en:
-        L += ["", "——— 原文 ———", body_en]
+    # 正文跟标题一模一样时不重复贴一遍（linux.sb 的 RSS 就是这样：
+    # description 只放了标题，再贴一遍等于同一句话出现两次）
+    same_as_head = " ".join(zh_body.split()) == " ".join(zh_title.split())
+    if same_as_head:
+        # 正文就是标题（linux.sb 的 RSS 只给标题），别让消息空一块
+        L.append("（该站 RSS 只给标题，正文点链接看）")
+    else:
+        L.append(zh_body)
+        # 翻了才附原文；没翻就别重复贴两遍
+        if zh_body != body_en:
+            L += ["", "——— 原文 ———", body_en]
     L.append("")
-    url = str(r.get("url") or "").strip()
+    url = str(_rg(r, "url") or "").strip()
     if url:
         L.append(url)
     return head[:60], "\n".join(L)
@@ -195,7 +246,7 @@ def build_notes(rows, day, cfg=None):
     """
     cap = int((cfg or {}).get("max_per_push", 10) or 10)
     out = []
-    for r in sorted(rows, key=lambda x: (-(x.get("stars") or 0), -(x.get("score") or 0)))[:cap]:
+    for r in sorted(rows, key=lambda x: (-(_rg(x, "stars") or 0), -(_rg(x, "score") or 0)))[:cap]:
         t, b = one_msg(r, day, cfg, translate=bool((cfg or {}).get("push_translate", True)))
         out.append((t, b, r))
     return out
