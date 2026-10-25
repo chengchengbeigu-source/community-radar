@@ -22,6 +22,30 @@ def notify_ok(r):
     return bool(r) and not any(d in r for d in _NOTIFY_DEAD)
 
 
+def in_window(cfg, now=None):
+    """现在在不在允许采集/推送的时间窗内。
+
+    2026-10-26 用户指定：早 8 点到晚 8 点，以手机本地时间为准。
+    end 是**含**的那一小时（end=20 → 20:59 还算在窗内）。
+    不配或配错就当全天开放，别因为一个配置写错把雷达整个哑掉。
+    """
+    try:
+        start = int(cfg.get("collect_start_hour", 0))
+        end = int(cfg.get("collect_end_hour", 23))
+    except (TypeError, ValueError):
+        return True, ""
+    if not (0 <= start <= 23 and 0 <= end <= 23):
+        return True, ""
+    h = (now or datetime.datetime.now()).hour
+    if start <= end:
+        ok = start <= h <= end
+    else:                       # 跨午夜，比如 22 点到次日 6 点
+        ok = h >= start or h <= end
+    if ok:
+        return True, ""
+    return False, "当前 %02d 点，不在 %02d-%02d 点窗口内" % (h, start, end)
+
+
 def notify_gap_ok(cfg):
     """节流检查：距上次「成功推送」不足 notify_min_gap_minutes 分钟就跳过。
 
@@ -69,6 +93,13 @@ def push(cfg, title, text, stamp=False, log=print):
 def run_collect(cfg, window=None, source=None, do_notify=True, log=print):
     """抓一遍、打分过滤入库、出简报、推送通知。返回本次统计 dict。"""
     ensure_dirs()
+    # 定时任务全天候挂着，靠这里卡窗口；手动跑（source 指定）不看窗口，
+    # 否则面板点「跑一次」在半夜点不动会让人以为坏了。
+    if not source:
+        ok_w, why_w = in_window(cfg)
+        if not ok_w:
+            log("[radar] 跳过本轮采集：" + why_w)
+            return {"skipped": True, "reason": why_w, "count": 0}
     win = window or cfg.get("window_days", 14)
     c = store.connect()
     total_fresh, dropped = 0, 0
@@ -155,6 +186,13 @@ def run_collect(cfg, window=None, source=None, do_notify=True, log=print):
             pass
 
     if do_notify:
+        if source:
+            ok_w, why_w = True, ""
+        else:
+            ok_w, why_w = in_window(cfg)
+        if not ok_w:
+            log("[radar] 跳过推送：" + why_w)
+            return stat
         ok, why = notify_gap_ok(cfg)
         if not ok:
             log(f"[radar] 跳过推送：{why}")

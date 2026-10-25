@@ -4,13 +4,19 @@ report_title: 社区情报雷达
 outbox_keep_days: 60
 notify_min_gap_minutes: 10
 push_gap_seconds: 4
+
+# ── 运行时间窗（2026-10-26 用户指定：早 8 点到晚 8 点，以手机本地时间为准）──
+# 窗口外不采集、不推送，省电省流量，也免得半夜把人吵醒。
+# 注意 collect_end_hour 是**含**该小时：20 表示 20:00~20:59 还在跑，21:00 起停。
+collect_start_hour: 8
+collect_end_hour: 20
 min_stars: 3
 min_score: 0
 max_per_push: 10
 push_translate: true
 proxy: ''
 schedule:
-  collect_minutes: 20
+  collect_minutes: 60
   progress_minutes: 60
   checkin_hour: 8
   digest_hour: 20
