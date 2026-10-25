@@ -55,6 +55,22 @@ sources:
     - 教程
     - VPS
     search_pages: 1
+  linuxdo:
+    enabled: true
+    proxy: direct
+    # 走 RSS 而非 latest.json（后者被 Cloudflare 挑战挡成 403）
+    endpoints:
+      - "/latest.rss"
+      - "/top.rss?period=daily"
+    # 只留干货板块；闲聊「搞七捻三」默认也留（有羊毛帖混在里面）
+    keep_boards: ["开发调优", "资源分享", "福利", "技术", "教程", "分享", "搞七捻三"]
+    keep_all: false
+  linuxsb:
+    enabled: true
+    proxy: direct
+    # 烧饼社区：2=福利放送 4=技术交流（羊毛+干货两块）
+    forums: [2, 4]
+    rss_period: "24h"
   x:
     enabled: true
     proxy: direct

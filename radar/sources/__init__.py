@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""数据源注册表：collect.py 只认这里，加新源 = 加一行 import + 注册。"""
-from . import nodeloc, nodeseek, x
+"""采集器注册表。加新源只需在这里挂一下，config.yaml 里启用即可。"""
+from . import linuxdo, linuxsb, nodeloc, nodeseek, x
 
-REGISTRY = {"nodeseek": nodeseek, "nodeloc": nodeloc, "x": x}
+REGISTRY = {
+    "nodeseek": nodeseek,
+    "nodeloc": nodeloc,
+    "linuxdo": linuxdo,
+    "linuxsb": linuxsb,
+    "x": x,
+}
