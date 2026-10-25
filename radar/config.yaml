@@ -57,6 +57,32 @@ sources:
     - 教程
     - VPS
     search_pages: 1
+  x:
+    enabled: true
+    proxy: direct
+    # 每账号只能看到最近 5~9 条（X 免鉴权页面上限），靠 uid 去重做增量
+    accounts:
+    - opencode
+    - deepseek_ai
+    - Cloudflare
+    - kimi_moonshot
+    - Alibaba_Qwen
+    - MiniMax_AI
+    - AI21Labs
+    - perplexity_ai
+    - MistralAI
+    - xai
+    - OpenAI
+    - AnthropicAI
+    - huggingface
+    - vllm_project
+    - ollama
+    per_account: 8
+    delay: 0.8
+    # 钉死的单推：用户点名要跟的，永远不丢
+    tweets:
+    - https://x.com/opencode/status/2113699251616412056
+
 keywords:
   groups:
   - tag: 公益/免费
@@ -72,6 +98,15 @@ keywords:
     - 羊毛
     - 薅
     - 免费
+    - free
+    - free tier
+    - free plan
+    - free trial
+    - free for
+    - free credits
+    - open weights
+    - no cost
+    - free access
   - tag: VPS/主机
     weight: 3
     kws:
@@ -86,6 +121,11 @@ keywords:
     - az100
     - aws
     - hetzner
+    - free vps
+    - free cloud
+    - free instance
+    - trial
+    - always free
   - tag: 教程
     weight: 2
     kws:
@@ -113,6 +153,11 @@ keywords:
     - 上车
     - 拼车
     - 团购
+    - discount
+    - coupon
+    - promo code
+    - deal
+    - black friday
   - tag: 注册/额度
     weight: 2
     kws:
@@ -128,6 +173,14 @@ keywords:
     - api key
     - 免费api
     - 兑换码
+    - credits
+    - quota
+    - sign up
+    - waitlist
+    - invite code
+    - api credit
+    - monthly credits
+    - free credits
   - tag: 活动/抽奖
     weight: 2
     kws:
@@ -139,6 +192,14 @@ keywords:
     - 最后一天
     - 截止
     - 免费领取
+    - contest
+    - raffle
+    - limited time
+    - last day
+    - ends today
+    - ends soon
+    - while supplies last
+    - giveaway
   - tag: 资源/节点
     weight: 1
     kws:
@@ -153,6 +214,28 @@ keywords:
     - 中转
     - 镜像
     - 节点
+    - mirror
+    - endpoint
+    - object storage
+    - free cdn
+  - tag: 模型/发布
+    weight: 2
+    kws:
+    - now available
+    - is here
+    - is now
+    - released
+    - launch
+    - announcing
+    - introducing
+    - open weights
+    - available in
+    - updated to
+    - now on
+    - new model
+    - general availability
+    - now supports
+
   negative:
     weight: -2
     kws:
@@ -211,6 +294,7 @@ keywords:
     expose: -1.5
     sandbox: -0.5
     photo-share: -1
+    x/官方发布: 1.5
   urgent:
   - 限时
   - 最后一天

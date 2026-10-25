@@ -42,6 +42,22 @@ def _kw_cfg(cfg):
     }
 
 
+def _hit(word, text):
+    """词命中判定：英文走词边界，中文走子串。
+
+    为什么必需：纯 `w in text` 会把 trial 命中 indus-trial、free 命中 freeway、
+    oss 命中 boss/loss/cross —— 英文词必须卡词边界。
+    中文没有空格分词，只能子串（「免费」命中「免费领」是对的）。
+    """
+    w = (word or "").lower()
+    if not w:
+        return False
+    if w.isascii():
+        body = r"[\s\-_]+".join(re.escape(x) for x in w.split())
+        return re.search(r"(?<![a-z0-9])" + body + r"(?![a-z0-9])", text) is not None
+    return w in text
+
+
 def junk_reason(title, board="", excerpt="", cfg=None, min_neg=3):
     """判断这条是不是「不值得推」的垃圾。是就返回中文理由，不是返回 None。
 
@@ -55,13 +71,13 @@ def junk_reason(title, board="", excerpt="", cfg=None, min_neg=3):
     kc = _kw_cfg(cfg)
     t = (title or "").lower()
     for w in kc["drop"]:
-        if w.lower() in t:
+        if _hit(w, t):
             return f"标题含广告词「{w}」"
     b = (board or "").lower()
     if b and b in [str(x).lower() for x in kc["drop_boards"]]:
         return f"板块「{board}」不是内容"
     text = f"{title} {excerpt}".lower()
-    n = sum(1 for w in kc["negative"]["kws"] if w.lower() in text)
+    n = sum(1 for w in kc["negative"]["kws"] if _hit(w, text))
     if n >= min_neg:
         return f"命中 {n} 个掺水词"
     return None
@@ -73,13 +89,13 @@ def score_item(title, board="", excerpt="", cfg=None):
     text = f"{title} {excerpt}".lower()
     s, tags, reasons = 0.0, [], []
     for g in kc["groups"]:
-        hits = [w for w in g["kws"] if w.lower() in text]
+        hits = [w for w in g["kws"] if _hit(w, text)]
         if hits:
             s += g["weight"]
             tags.append(g["tag"])
             reasons.append(f"命中「{'/'.join(hits[:3])}」→ {g['tag']}")
     for w in kc["negative"]["kws"]:
-        if w.lower() in text:
+        if _hit(w, text):
             s += kc["negative"]["weight"]
             reasons.append(f"掺水分「{w}」")
             break
