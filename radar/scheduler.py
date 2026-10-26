@@ -24,6 +24,7 @@ from radar.util import DATA_DIR, WS, load_config, notify, today_str
 DEFAULTS = {
     "collect_minutes": 20,
     "progress_minutes": 60,
+    "progress_push": True,
     "checkin_hour": 8,
     "digest_hour": 20,
     "hb_slice_seconds": 600,
@@ -114,30 +115,7 @@ def _prog_note(e, name, pg, st_all, today):
     return ("（" + "，".join(bits) + "）") if bits else ""
 
 
-def notify_unlocked(name, cfg, body, ach, lv=None, log=print):
-    """推一条「已解锁 🎉」，同一个 (站名, 标记) 只推一次。
-
-    标记 ach 形如 "L1"（站内等级到了）或 "T600"（阅读进度到了）。记账落在
-    scheduler.json 的 congrats:<站名>:<标记>，跨轮次 / 跨进程都不会重复轰炸 ——
-    radar/heartbeat.py::_reached_and_notify 也调这里，两边共用同一个键，
-    谁先发现谁推，收件人只会看到一条。
-    """
-    st_c = _state_load()
-    key = "congrats:%s:%s" % (name, ach)
-    if st_c.get(key):
-        return False
-    lvl_name = ("白银会员（TL1）" if lv == 1 else ("TL%s" % lv)) if lv is not None else ""
-    txt = ("%s 的目标已经达成 🎉\n%s\n%s"
-           "在线时长保活已按 stop_at 停机，不会再空转白耗。"
-           % (name, body, ("当前等级：" + lvl_name + "\n") if lvl_name else ""))
-    collect.push(cfg, "🎉 %s 已解锁" % name, txt, log=log)
-    st_c[key] = int(time.time())
-    _state_save(st_c)
-    log("[sched] 已推「%s 已解锁」祝贺（%s）" % (name, ach))
-    return True
-
-
-def do_progress(cfg, log=print, push_it=True):
+def do_progress(cfg, log=print, push_it=True, push_progress=True):
     """取站内实时阅读进度（upgrade-progress.json，不是有缓存的 summary.json）并推送通知。
 
     取不到时顺手查一下登录态：失效就按「唯一需要人修的点」推 QQ 告警。
@@ -149,7 +127,6 @@ def do_progress(cfg, log=print, push_it=True):
     out = {}
     dead = []
     met = []          # 本次观测到「已达标」的站点，循环后再统一推 🎉（避免在循环里发通知）
-    stalled = []      # 已按 stop_at 停机的站点：保活停了，数字不会再动，别每小时推同一条
     for e in cfg.get("checkins") or []:
         if not e.get("enabled", True):
             continue
@@ -193,23 +170,28 @@ def do_progress(cfg, log=print, push_it=True):
             _ach = "T%d" % int(_pt)
         if _ach:
             met.append((name, out[name], _ach, _lv))
-        # 停机判定单独记一份：签到照做，但「在线时长」这条线已经不跑了，
-        # 再每轮推一次「在线进度」就是纯噪音 —— 数字冻住不动，收件人分不清
-        # 是「在涨」还是「卡死了」（2026-10-14 那次抱怨的正是这个）。
-        if _lv is not None and _stop_tl is not None and float(_lv) >= float(_stop_tl):
-            stalled.append(name)
     try:
         save_state(st_all)
     except Exception:
         pass
     if push_it and met:
-        # 「已解锁」只推一次 —— 抽成 notify_unlocked 是因为心跳那边也要用
-        # （达标那一刻就地推，不用等这里一小时一次轮询），两边必须共用去重键。
+        # 「已解锁」只推一次，靠 scheduler.json 记账（跨轮次也不会重复轰炸）
+        st_c = _state_load()
         for nm, body, ach, lv in met:
-            notify_unlocked(nm, cfg, body, ach, lv, log=log)
-    if push_it and out:
+            key = "congrats:%s:%s" % (nm, ach)
+            if st_c.get(key):
+                continue
+            lvl_name = ("白银会员（TL1）" if lv == 1 else ("TL%s" % lv)) if lv is not None else ""
+            txt = ("%s 的目标已经达成 🎉\n%s\n%s"
+                   "在线时长保活已按 stop_at 停机，不会再空转白耗。"
+                   % (nm, body, ("当前等级：" + lvl_name + "\n") if lvl_name else ""))
+            collect.push(cfg, "🎉 %s 已解锁" % nm, txt, log=log)
+            st_c[key] = int(time.time())
+            _state_save(st_c)
+            log("[sched] 已推「%s 已解锁」祝贺（%s）" % (nm, ach))
+    if push_it and push_progress and out:
         # 失效的站点不塞进这条例行进度里 —— 它另外会有一条明确的告警，别重复轰炸
-        alive = {k: v for k, v in out.items() if k not in dead and k not in stalled}
+        alive = {k: v for k, v in out.items() if k not in dead}
         if alive:
             body = "；".join("%s %s" % (k, v) for k, v in alive.items())
             collect.push(cfg, "在线进度 " + today_str(), body, log=log)
@@ -417,7 +399,7 @@ def run(cfg, minutes, log=print):
         # 4) 在线时长进度
         if now >= next_prog:
             log("[sched] → 阅读进度")
-            _safe("进度", lambda: do_progress(cfg, log=log), log)
+            _safe("进度", lambda: do_progress(cfg, log=log, push_progress=bool(sch.get("progress_push", True))), log)
             next_prog = time.time() + every_prog
 
         # 5) 当日总结（默认 20:00）
