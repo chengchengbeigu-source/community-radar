@@ -17,7 +17,7 @@ push_translate: true
 proxy: ''
 schedule:
   collect_minutes: 60
-  progress_minutes: 60
+  progress_minutes: 240
   # 例行「在线进度」通知已关（2026-10-26 用户要求）：每小时一条、数字还不涨，纯噪音。
   # 注意 progress_minutes 仍在跑 —— do_progress 还负责探登录态，cookie 失效照样告警。
   progress_push: false
